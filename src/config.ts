@@ -1,4 +1,5 @@
 import { ConfigError } from './errors.js';
+import { parseFieldPolicy } from './field-policy.js';
 import type { AuthMethod, Config, DeploymentType, ServiceConfig } from './types/common.js';
 
 function isCloud(url: string): boolean {
@@ -83,6 +84,10 @@ export function loadConfig(): Config {
     throw new ConfigError(
       'No Atlassian services configured. Set JIRA_URL and/or CONFLUENCE_URL environment variables.',
     );
+  }
+
+  if (jira) {
+    jira.fieldPolicy = parseFieldPolicy(process.env.JIRA_ALLOWED_FIELDS, process.env.JIRA_BLOCKED_FIELDS);
   }
 
   return { jira, confluence };

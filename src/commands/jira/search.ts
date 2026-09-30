@@ -34,14 +34,14 @@ export function registerSearchCommand(jira: Command): void {
   jira
     .command('search <jql>')
     .description('Search Jira issues using JQL')
-    .option('-f, --fields <fields>', 'Comma-separated fields to return')
+    .option('-f, --fields <fields>', 'Comma-separated fields to return (names or IDs, including custom fields)')
     .option('-l, --limit <n>', 'Maximum results to return', '20')
     .option('--offset <n>', 'Start at this result index', '0')
     .action(async (jql: string, opts: { fields?: string; limit: string; offset: string }, command: Command) => {
       const config = loadConfig();
       const jiraConfig = requireJiraConfig(config);
       const http = createHttpClient(jiraConfig);
-      const client = createJiraClient(http, jiraConfig.baseUrl, jiraConfig.deployment);
+      const client = createJiraClient(http, jiraConfig.baseUrl, jiraConfig.deployment, jiraConfig.fieldPolicy);
       const ctx = detectOutputMode(command.optsWithGlobals().json);
 
       const fields = opts.fields ? opts.fields.split(',').map(f => f.trim()) : undefined;

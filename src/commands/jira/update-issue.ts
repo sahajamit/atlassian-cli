@@ -4,6 +4,7 @@ import { loadConfig, requireJiraConfig } from '../../config.js';
 import { createHttpClient } from '../../http.js';
 import { createJiraClient } from '../../clients/jira.js';
 import { detectOutputMode, output } from '../../output.js';
+import { FIELD_OPTION_DESC, FIELD_OPTION_FLAGS, collectField, parseFieldSpecs } from './field-option.js';
 import type { JiraIssue } from '../../types/jira.js';
 
 function formatHuman(issue: JiraIssue): string {
@@ -29,6 +30,7 @@ export function registerUpdateIssueCommand(jira: Command): void {
     .option('--add-labels <labels>', 'Add labels (comma-separated)')
     .option('--remove-labels <labels>', 'Remove labels (comma-separated)')
     .option('--components <components>', 'Replace all components (comma-separated)')
+    .option(FIELD_OPTION_FLAGS, FIELD_OPTION_DESC, collectField, [] as string[])
     .action(async (key: string, opts: {
       summary?: string;
       description?: string;
@@ -38,11 +40,12 @@ export function registerUpdateIssueCommand(jira: Command): void {
       addLabels?: string;
       removeLabels?: string;
       components?: string;
+      field?: string[];
     }, command: Command) => {
       const config = loadConfig();
       const jiraConfig = requireJiraConfig(config);
       const http = createHttpClient(jiraConfig);
-      const client = createJiraClient(http, jiraConfig.baseUrl, jiraConfig.deployment);
+      const client = createJiraClient(http, jiraConfig.baseUrl, jiraConfig.deployment, jiraConfig.fieldPolicy);
       const ctx = detectOutputMode(command.optsWithGlobals().json);
 
       await client.updateIssue(key, {
@@ -54,6 +57,7 @@ export function registerUpdateIssueCommand(jira: Command): void {
         addLabels: opts.addLabels?.split(',').map(l => l.trim()),
         removeLabels: opts.removeLabels?.split(',').map(l => l.trim()),
         components: opts.components?.split(',').map(c => c.trim()),
+        customFields: parseFieldSpecs(opts.field),
       });
 
       // Fetch updated issue to return current state

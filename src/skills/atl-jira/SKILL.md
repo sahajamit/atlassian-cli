@@ -38,7 +38,7 @@ atl jira search "<jql>" [--limit N] [--offset N] [--fields field1,field2] [--jso
 **Options:**
 - `--limit N` (default: 20) — max results
 - `--offset N` (default: 0) — skip N results
-- `--fields` — comma-separated field names
+- `--fields` — comma-separated field names or IDs, including custom fields (e.g. `Sprint,Team`)
 - `--json` — force JSON output
 
 **Examples:**
@@ -88,7 +88,7 @@ atl jira get-issue <ISSUE-KEY> [--comments N] [--fields field1,field2] [--json]
 
 **Options:**
 - `--comments N` (default: 10) — max comments to include
-- `--fields` — comma-separated field names
+- `--fields` — comma-separated field names or IDs, including custom fields (e.g. `Sprint,Team`)
 - `--json` — force JSON output
 
 **Examples:**
@@ -201,6 +201,7 @@ atl jira create-issue --project <KEY> --type <type> --summary <text> [options] [
 - `--assignee <user>` — assignee (accountId for Cloud, username for Server)
 - `--priority <name>` — priority (e.g. High, Medium, Low)
 - `--labels <labels>` — comma-separated labels
+- `--field <name=value>` — set any field by name or ID, repeatable (`Name:=<json>` for raw JSON). May be restricted by `JIRA_ALLOWED_FIELDS` / `JIRA_BLOCKED_FIELDS`
 - `--components <components>` — comma-separated component names
 - `--parent <key>` — parent issue key (for sub-tasks)
 
@@ -236,6 +237,7 @@ atl jira update-issue <ISSUE-KEY> [options] [--json]
 - `--assignee <user>` — new assignee
 - `--priority <name>` — new priority
 - `--labels <labels>` — replace all labels (comma-separated)
+- `--field <name=value>` — set any field by name or ID, repeatable (`Name:=<json>` for raw JSON). May be restricted by `JIRA_ALLOWED_FIELDS` / `JIRA_BLOCKED_FIELDS`
 - `--add-labels <labels>` — add labels
 - `--remove-labels <labels>` — remove labels
 - `--components <components>` — replace all components

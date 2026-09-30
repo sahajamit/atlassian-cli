@@ -63,7 +63,7 @@ export function registerDownloadAttachmentsCommand(jira: Command): void {
       const config = loadConfig();
       const jiraConfig = requireJiraConfig(config);
       const http = createHttpClient(jiraConfig);
-      const client = createJiraClient(http, jiraConfig.baseUrl, jiraConfig.deployment);
+      const client = createJiraClient(http, jiraConfig.baseUrl, jiraConfig.deployment, jiraConfig.fieldPolicy);
       const ctx = detectOutputMode(command.optsWithGlobals().json);
 
       const outputDir = opts.outputDir ?? join(tmpdir(), 'jira-attachments', opts.issueKey);

@@ -4,6 +4,7 @@ import { loadConfig, requireJiraConfig } from '../../config.js';
 import { createHttpClient } from '../../http.js';
 import { createJiraClient } from '../../clients/jira.js';
 import { detectOutputMode, output } from '../../output.js';
+import { FIELD_OPTION_DESC, FIELD_OPTION_FLAGS, collectField, parseFieldSpecs } from './field-option.js';
 import type { JiraCreateIssueResult } from '../../types/jira.js';
 
 function formatHuman(result: JiraCreateIssueResult): string {
@@ -28,6 +29,7 @@ export function registerCreateIssueCommand(jira: Command): void {
     .option('--labels <labels>', 'Comma-separated labels')
     .option('--components <components>', 'Comma-separated component names')
     .option('--parent <key>', 'Parent issue key (for sub-tasks)')
+    .option(FIELD_OPTION_FLAGS, FIELD_OPTION_DESC, collectField, [] as string[])
     .action(async (opts: {
       project: string;
       type: string;
@@ -38,11 +40,12 @@ export function registerCreateIssueCommand(jira: Command): void {
       labels?: string;
       components?: string;
       parent?: string;
+      field?: string[];
     }, command: Command) => {
       const config = loadConfig();
       const jiraConfig = requireJiraConfig(config);
       const http = createHttpClient(jiraConfig);
-      const client = createJiraClient(http, jiraConfig.baseUrl, jiraConfig.deployment);
+      const client = createJiraClient(http, jiraConfig.baseUrl, jiraConfig.deployment, jiraConfig.fieldPolicy);
       const ctx = detectOutputMode(command.optsWithGlobals().json);
 
       const result = await client.createIssue({
@@ -55,6 +58,7 @@ export function registerCreateIssueCommand(jira: Command): void {
         labels: opts.labels?.split(',').map(l => l.trim()),
         components: opts.components?.split(',').map(c => c.trim()),
         parentKey: opts.parent,
+        customFields: parseFieldSpecs(opts.field),
       });
 
       output(result, formatHuman, ctx);

@@ -33,6 +33,7 @@
     "copy-skills": "mkdir -p dist/src/skills/atl dist/src/skills/atl-jira dist/src/skills/atl-confluence && cp src/skills/atl/SKILL.md dist/src/skills/atl/SKILL.md && cp src/skills/atl-jira/SKILL.md dist/src/skills/atl-jira/SKILL.md && cp src/skills/atl-confluence/SKILL.md dist/src/skills/atl-confluence/SKILL.md",
     "dev": "tsc --watch",
     "start": "node dist/bin/atl.js",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
     "prepublishOnly": "npm run build"
   },
   "engines": {

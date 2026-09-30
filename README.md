@@ -288,10 +288,50 @@ The same pattern applies to Confluence — replace `JIRA_` with `CONFLUENCE_`.
 | `JIRA_USERNAME` | Cloud | Your email address |
 | `JIRA_API_TOKEN` | Cloud | API token from id.atlassian.com |
 | `JIRA_PERSONAL_TOKEN` | Server/DC | Personal access token |
+| `JIRA_ALLOWED_FIELDS` | No | Comma-separated custom field names/IDs that are visible. See [Field policy](#jira-field-policy) |
+| `JIRA_BLOCKED_FIELDS` | No | Comma-separated field names/IDs that are never read or written |
 | `CONFLUENCE_URL` | For Confluence | Confluence instance URL |
 | `CONFLUENCE_USERNAME` | Cloud | Your email address |
 | `CONFLUENCE_API_TOKEN` | Cloud | API token from id.atlassian.com |
 | `CONFLUENCE_PERSONAL_TOKEN` | Server/DC | Personal access token |
+
+---
+
+## Jira Custom Fields
+
+Read custom fields by name or ID with `--fields`, and set them with `--field`:
+
+```bash
+atl jira get-issue PROJ-1 --fields summary,Sprint,Team
+atl jira update-issue PROJ-1 --field "Team=Platform" --field "Sprint=42"
+atl jira create-issue -p PROJ -t Task -s "Title" --field "Story Points=3"
+atl jira update-issue PROJ-1 --field 'Custom:={"id":"10"}'   # raw JSON escape hatch
+```
+
+Values are converted using the field's schema (options, users, numbers, arrays, dates).
+Sprint membership is set through the Agile API and takes a numeric sprint ID.
+Unknown custom field types fall back to JSON, then plain text.
+
+### Jira field policy
+
+Two optional environment variables restrict which fields `atl` will touch. Entries are
+field names or IDs (case-insensitive); prefer IDs like `customfield_10042` because names can be duplicated.
+
+| Variable | Effect |
+|----------|--------|
+| `JIRA_BLOCKED_FIELDS` | Listed fields (standard or custom) are never requested, returned, or written. |
+| `JIRA_ALLOWED_FIELDS` | When set, **only** the listed custom fields are visible. They are also included in `get-issue` and `search` output by default. Standard fields are unaffected. |
+
+The block-list wins if a field is in both. Requesting or writing a restricted field fails with
+an error that does not reveal whether the field exists, and JQL that references a restricted field is rejected.
+
+```bash
+export JIRA_ALLOWED_FIELDS="Sprint,Team"
+export JIRA_BLOCKED_FIELDS="description,customfield_10500"
+```
+
+> This is a guardrail enforced inside the CLI, not a security boundary. Anyone who can set the
+> environment or read the API token can bypass it, so keep the token out of reach of whoever the policy is for.
 
 ---
 

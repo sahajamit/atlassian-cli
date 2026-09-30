@@ -1,13 +1,28 @@
 import type { HttpClient } from '../http.js';
 import { adfToMarkdown, adfToMarkdownWithImages } from '../preprocessing/adf-to-text.js';
 import { textToAdf } from '../preprocessing/text-to-adf.js';
-import type { DeploymentType } from '../types/common.js';
+import { ConfigError } from '../errors.js';
+import {
+  fieldNotPermitted,
+  findRestrictedJqlReference,
+  isExplicitlyAllowed,
+  isFieldPermitted,
+} from '../field-policy.js';
+import {
+  findFieldDefs,
+  flattenFieldValue,
+  normalizeFieldDef,
+  toFieldWrite,
+} from './jira-fields.js';
+import type { DeploymentType, FieldPolicy } from '../types/common.js';
 import type {
   JiraAddCommentResult,
   JiraAttachment,
   JiraCloudSearchResponse,
   JiraComment,
+  JiraFieldDef,
   JiraCreateIssueInput,
+  JiraCustomFieldInput,
   JiraCreateIssueResult,
   JiraImageInfo,
   JiraIssue,
@@ -71,7 +86,12 @@ function normalizeAttachments(raw: unknown[]): JiraAttachment[] {
   }));
 }
 
-function normalizeIssue(raw: JiraRawIssue, baseUrl: string, deployment: DeploymentType): JiraIssue {
+function normalizeIssue(
+  raw: JiraRawIssue,
+  baseUrl: string,
+  deployment: DeploymentType,
+  customDefs: JiraFieldDef[] = [],
+): JiraIssue {
   const f = raw.fields;
 
   // Process attachments
@@ -138,6 +158,12 @@ function normalizeIssue(raw: JiraRawIssue, baseUrl: string, deployment: Deployme
   const statusObj = f.status as Record<string, unknown> | undefined;
   const statusCategoryObj = statusObj?.statusCategory as Record<string, unknown> | undefined;
 
+  const customFields: Record<string, unknown> = {};
+  for (const def of customDefs) {
+    const key = def.name in customFields ? `${def.name} (${def.id})` : def.name;
+    customFields[key] = flattenFieldValue(f[def.id], def);
+  }
+
   return {
     key: raw.key,
     id: raw.id,
@@ -158,14 +184,126 @@ function normalizeIssue(raw: JiraRawIssue, baseUrl: string, deployment: Deployme
     comments,
     images,
     attachments,
+    customFields,
     url: `${baseUrl}/browse/${raw.key}`,
   };
 }
 
-export function createJiraClient(http: HttpClient, baseUrl: string, deployment: DeploymentType): JiraClient {
+interface FieldPlan {
+  apiFields: string[];
+  customDefs: JiraFieldDef[];
+}
+
+export function createJiraClient(
+  http: HttpClient,
+  baseUrl: string,
+  deployment: DeploymentType,
+  policy?: FieldPolicy,
+): JiraClient {
+  const apiVersion = deployment === 'cloud' ? '3' : '2';
+  let catalogPromise: Promise<JiraFieldDef[]> | undefined;
+
+  function getCatalog(): Promise<JiraFieldDef[]> {
+    catalogPromise ??= http
+      .request<Array<Record<string, unknown>>>({ method: 'GET', path: `/rest/api/${apiVersion}/field` })
+      .then(list => list.map(normalizeFieldDef));
+    return catalogPromise;
+  }
+
+  function permitted(def: JiraFieldDef): boolean {
+    return isFieldPermitted(policy, def);
+  }
+
+  function standardDef(id: string, catalog: JiraFieldDef[]): JiraFieldDef {
+    return catalog.find(f => f.id === id) ?? { id, name: id, custom: false, clauseNames: [] };
+  }
+
+  async function planFields(requested?: string[]): Promise<FieldPlan> {
+    if (!policy && !requested?.length) return { apiFields: DEFAULT_FIELDS, customDefs: [] };
+
+    const catalog = await getCatalog();
+    const standard: string[] = [];
+    const customDefs: JiraFieldDef[] = [];
+
+    for (const ref of requested ?? []) {
+      const all = findFieldDefs(catalog, ref);
+      if (all.length === 0) {
+        // Unknown to the catalog: keep the pass-through behaviour unless the policy names it.
+        if (!isFieldPermitted(policy, { id: ref, name: ref, custom: false })) throw fieldNotPermitted(ref);
+        standard.push(ref);
+        continue;
+      }
+      const allowed = all.filter(permitted);
+      if (allowed.length === 0) throw fieldNotPermitted(ref);
+      if (allowed.length > 1) {
+        const ids = allowed.map(f => f.id).join(', ');
+        throw new ConfigError(`Field name "${ref}" is ambiguous; use one of: ${ids}`);
+      }
+      const def = allowed[0]!;
+      if (def.custom) customDefs.push(def);
+      else standard.push(def.id);
+    }
+
+    // Allow-listed custom fields are included by default when no fields were requested.
+    if (!requested?.length && policy?.allow.length) {
+      customDefs.push(...catalog.filter(f => f.custom && isExplicitlyAllowed(policy, f) && permitted(f)));
+    }
+
+    const base = (standard.length ? standard : DEFAULT_FIELDS).filter(id => permitted(standardDef(id, catalog)));
+    return { apiFields: [...base, ...customDefs.map(d => d.id)], customDefs };
+  }
+
+  async function assertJqlPermitted(jql: string): Promise<void> {
+    if (!policy) return;
+    const restricted = (await getCatalog()).filter(f => !permitted(f));
+    if (findRestrictedJqlReference(jql, restricted)) {
+      throw new ConfigError('JQL references a field that is restricted by the configured field policy.');
+    }
+  }
+
+  async function assertFieldsPermitted(fieldIds: string[]): Promise<void> {
+    if (!policy || fieldIds.length === 0) return;
+    const catalog = await getCatalog();
+    for (const id of fieldIds) {
+      if (!permitted(standardDef(id, catalog))) throw fieldNotPermitted(id);
+    }
+  }
+
+  async function resolveCustomWrites(
+    inputs: JiraCustomFieldInput[] | undefined,
+  ): Promise<{ fields: Record<string, unknown>; sprintId?: number }> {
+    const fields: Record<string, unknown> = {};
+    let sprintId: number | undefined;
+    if (!inputs?.length) return { fields };
+
+    const catalog = await getCatalog();
+    for (const input of inputs) {
+      const allowed = findFieldDefs(catalog, input.field).filter(permitted);
+      if (allowed.length === 0) throw fieldNotPermitted(input.field);
+      if (allowed.length > 1) {
+        const ids = allowed.map(f => f.id).join(', ');
+        throw new ConfigError(`Field name "${input.field}" is ambiguous; use one of: ${ids}`);
+      }
+      const def = allowed[0]!;
+      const write = toFieldWrite(def, input.value, deployment, input.json);
+      if (write.sprintId !== undefined) sprintId = write.sprintId;
+      else fields[def.id] = write.value;
+    }
+    return { fields, sprintId };
+  }
+
+  async function addToSprint(sprintId: number, issueKey: string): Promise<void> {
+    await http.request<void>({
+      method: 'POST',
+      path: `/rest/agile/1.0/sprint/${sprintId}/issue`,
+      body: { issues: [issueKey] },
+    });
+  }
+
   return {
     async search(jql: string, opts: SearchOptions = {}): Promise<JiraSearchResult> {
-      const fields = opts.fields ?? DEFAULT_FIELDS;
+      await assertJqlPermitted(jql);
+      const { apiFields: fields, customDefs } = await planFields(opts.fields);
       const limit = opts.limit ?? 20;
       const offset = opts.offset ?? 0;
 
@@ -182,7 +320,7 @@ export function createJiraClient(http: HttpClient, baseUrl: string, deployment: 
           },
         });
 
-        const issues = response.issues.map(raw => normalizeIssue(raw, baseUrl, deployment));
+        const issues = response.issues.map(raw => normalizeIssue(raw, baseUrl, deployment, customDefs));
         return {
           issues,
           total: response.total ?? issues.length,
@@ -201,7 +339,7 @@ export function createJiraClient(http: HttpClient, baseUrl: string, deployment: 
           },
         });
 
-        const issues = response.issues.map(raw => normalizeIssue(raw, baseUrl, deployment));
+        const issues = response.issues.map(raw => normalizeIssue(raw, baseUrl, deployment, customDefs));
         return {
           issues,
           total: response.total,
@@ -211,9 +349,8 @@ export function createJiraClient(http: HttpClient, baseUrl: string, deployment: 
     },
 
     async getIssue(issueKey: string, opts: GetIssueOptions = {}): Promise<JiraIssue> {
-      const fields = opts.fields ?? DEFAULT_FIELDS;
+      const { apiFields: fields, customDefs } = await planFields(opts.fields);
       const expand = opts.expand ?? [];
-      const apiVersion = deployment === 'cloud' ? '3' : '2';
 
       const raw = await http.request<JiraRawIssue>({
         method: 'GET',
@@ -224,7 +361,7 @@ export function createJiraClient(http: HttpClient, baseUrl: string, deployment: 
         },
       });
 
-      const issue = normalizeIssue(raw, baseUrl, deployment);
+      const issue = normalizeIssue(raw, baseUrl, deployment, customDefs);
 
       // Limit comments if requested
       if (opts.commentLimit !== undefined && issue.comments.length > opts.commentLimit) {
@@ -235,7 +372,7 @@ export function createJiraClient(http: HttpClient, baseUrl: string, deployment: 
     },
 
     async getAttachments(issueKey: string): Promise<JiraAttachment[]> {
-      const apiVersion = deployment === 'cloud' ? '3' : '2';
+      await assertFieldsPermitted(['attachment']);
       const raw = await http.request<JiraRawIssue>({
         method: 'GET',
         path: `/rest/api/${apiVersion}/issue/${issueKey}`,
@@ -251,7 +388,6 @@ export function createJiraClient(http: HttpClient, baseUrl: string, deployment: 
     },
 
     async createIssue(input: JiraCreateIssueInput): Promise<JiraCreateIssueResult> {
-      const apiVersion = deployment === 'cloud' ? '3' : '2';
 
       const fields: Record<string, unknown> = {
         project: { key: input.projectKey },
@@ -287,11 +423,17 @@ export function createJiraClient(http: HttpClient, baseUrl: string, deployment: 
         fields.parent = { key: input.parentKey };
       }
 
+      const custom = await resolveCustomWrites(input.customFields);
+      Object.assign(fields, custom.fields);
+      await assertFieldsPermitted(Object.keys(fields));
+
       const response = await http.request<{ id: string; key: string; self: string }>({
         method: 'POST',
         path: `/rest/api/${apiVersion}/issue`,
         body: { fields },
       });
+
+      if (custom.sprintId !== undefined) await addToSprint(custom.sprintId, response.key);
 
       return {
         key: response.key,
@@ -301,7 +443,6 @@ export function createJiraClient(http: HttpClient, baseUrl: string, deployment: 
     },
 
     async updateIssue(issueKey: string, input: JiraUpdateIssueInput): Promise<void> {
-      const apiVersion = deployment === 'cloud' ? '3' : '2';
 
       const fields: Record<string, unknown> = {};
       const update: Record<string, unknown[]> = {};
@@ -342,19 +483,27 @@ export function createJiraClient(http: HttpClient, baseUrl: string, deployment: 
         update.labels = [...(update.labels ?? []), ...input.removeLabels.map(l => ({ remove: l }))];
       }
 
+      const custom = await resolveCustomWrites(input.customFields);
+      Object.assign(fields, custom.fields);
+      await assertFieldsPermitted([...Object.keys(fields), ...Object.keys(update)]);
+
       const body: Record<string, unknown> = {};
       if (Object.keys(fields).length > 0) body.fields = fields;
       if (Object.keys(update).length > 0) body.update = update;
 
-      await http.request<void>({
-        method: 'PUT',
-        path: `/rest/api/${apiVersion}/issue/${issueKey}`,
-        body,
-      });
+      if (Object.keys(body).length > 0 || custom.sprintId === undefined) {
+        await http.request<void>({
+          method: 'PUT',
+          path: `/rest/api/${apiVersion}/issue/${issueKey}`,
+          body,
+        });
+      }
+
+      if (custom.sprintId !== undefined) await addToSprint(custom.sprintId, issueKey);
     },
 
     async addComment(issueKey: string, body: string): Promise<JiraAddCommentResult> {
-      const apiVersion = deployment === 'cloud' ? '3' : '2';
+      await assertFieldsPermitted(['comment']);
 
       const requestBody = deployment === 'cloud'
         ? { body: textToAdf(body) }
@@ -377,7 +526,6 @@ export function createJiraClient(http: HttpClient, baseUrl: string, deployment: 
     },
 
     async getTransitions(issueKey: string): Promise<JiraTransition[]> {
-      const apiVersion = deployment === 'cloud' ? '3' : '2';
 
       const response = await http.request<{ transitions: Array<Record<string, unknown>> }>({
         method: 'GET',
@@ -404,7 +552,8 @@ export function createJiraClient(http: HttpClient, baseUrl: string, deployment: 
       transitionId: string,
       opts: { comment?: string; resolution?: string } = {},
     ): Promise<void> {
-      const apiVersion = deployment === 'cloud' ? '3' : '2';
+
+      await assertFieldsPermitted([...(opts.resolution ? ['resolution'] : []), ...(opts.comment ? ['comment'] : [])]);
 
       const body: Record<string, unknown> = {
         transition: { id: transitionId },

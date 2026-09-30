@@ -5,6 +5,21 @@ export interface JiraUser {
   emailAddress?: string;
 }
 
+export interface JiraFieldDef {
+  id: string;
+  name: string;
+  custom: boolean;
+  clauseNames: string[];
+  schema?: { type?: string; items?: string; custom?: string };
+}
+
+export interface JiraCustomFieldInput {
+  field: string;
+  value: string;
+  /** Value is raw JSON sent as-is (`--field "Name:=<json>"`). */
+  json?: boolean;
+}
+
 export interface JiraComment {
   id: string;
   author: string;
@@ -58,6 +73,7 @@ export interface JiraIssue {
   comments: JiraComment[];
   images: JiraImageInfo[];
   attachments: JiraAttachment[];
+  customFields: Record<string, unknown>;
   url: string;
 }
 
@@ -101,6 +117,7 @@ export interface JiraCreateIssueInput {
   labels?: string[];
   components?: string[];
   parentKey?: string;
+  customFields?: JiraCustomFieldInput[];
 }
 
 export interface JiraCreateIssueResult {
@@ -118,6 +135,7 @@ export interface JiraUpdateIssueInput {
   addLabels?: string[];
   removeLabels?: string[];
   components?: string[];
+  customFields?: JiraCustomFieldInput[];
 }
 
 export interface JiraTransition {

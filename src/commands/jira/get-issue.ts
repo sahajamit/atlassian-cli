@@ -22,6 +22,11 @@ function formatHuman(issue: JiraIssue): string {
   lines.push(`  ${chalk.dim('Updated:')}    ${issue.updated}`);
   lines.push(`  ${chalk.dim('URL:')}        ${issue.url}`);
 
+  for (const [name, value] of Object.entries(issue.customFields)) {
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    lines.push(`  ${chalk.dim(name + ':')} ${text}`);
+  }
+
   if (issue.description) {
     lines.push('');
     lines.push(chalk.bold('Description'));
@@ -63,13 +68,13 @@ export function registerGetIssueCommand(jira: Command): void {
   jira
     .command('get-issue <key>')
     .description('Get full details of a Jira issue')
-    .option('-f, --fields <fields>', 'Comma-separated fields to return')
+    .option('-f, --fields <fields>', 'Comma-separated fields to return (names or IDs, including custom fields)')
     .option('-c, --comments <n>', 'Max comments to include', '10')
     .action(async (key: string, opts: { fields?: string; comments: string }, command: Command) => {
       const config = loadConfig();
       const jiraConfig = requireJiraConfig(config);
       const http = createHttpClient(jiraConfig);
-      const client = createJiraClient(http, jiraConfig.baseUrl, jiraConfig.deployment);
+      const client = createJiraClient(http, jiraConfig.baseUrl, jiraConfig.deployment, jiraConfig.fieldPolicy);
       const ctx = detectOutputMode(command.optsWithGlobals().json);
 
       const fields = opts.fields ? opts.fields.split(',').map(f => f.trim()) : undefined;
